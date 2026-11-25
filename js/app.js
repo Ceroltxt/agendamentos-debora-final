@@ -106,30 +106,6 @@ function saveReservations(schoolList) {
       reservations: sanitizedList
     })
   }).catch(() => {});
-  const supa = getAppSupabase();
-  if (supa) {
-    try {
-      const supaRows = sanitizedList.map((r) => ({
-        id: r.id,
-        school_id: r.schoolId || currentSchool.id,
-        space: r.space,
-        day: r.day,
-        date: r.date,
-        period: r.period,
-        slot_index: Number(r.slotIndex),
-        slot_label: r.slotLabel,
-        slot_time: r.slotTime,
-        description: r.description || "",
-        grade: r.grade || "Turma ETEC",
-        author_name: r.authorName,
-        author_role: r.authorRole || "Docente CPS",
-        author_id: r.authorId,
-        is_recurrent: Boolean(r.isRecurrent),
-        created_at: r.createdAt || new Date().toISOString()
-      }));
-      supa.from("agendamentos").upsert(supaRows).catch(() => {});
-    } catch (e) {}
-  }
 }
 function getNotices() {
   try {
@@ -141,6 +117,36 @@ function getNotices() {
 }
 function saveNotices(list) {
   localStorage.setItem(NOTICES_KEY, JSON.stringify(list));
+}
+function pushNotice(title, desc) {
+  const notices = getNotices();
+  const entry = { title, desc, time: "Agora" };
+  notices.unshift(entry);
+  saveNotices(notices);
+  fetch("/api/notices", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      schoolId: getActiveSchool().id,
+      title,
+      desc,
+      time: "Agora"
+    })
+  }).catch(() => {});
+}
+async function syncNoticesFromServer() {
+  try {
+    const schoolId = getActiveSchool().id;
+    const res = await fetch(`/api/notices?schoolId=${encodeURIComponent(schoolId)}`, { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data && Array.isArray(data.notices)) {
+      saveNotices(data.notices);
+      if (typeof renderNoticesList === "function") {
+        renderNoticesList();
+      }
+    }
+  } catch (e) {}
 }
 const USER_PROFILE_KEY = "etec_usuario_perfil";
 const TOUR_STORAGE_KEY = "etec_tutorial_concluido";
@@ -226,7 +232,7 @@ function updateReservationsAuthor(profile, oldName = "") {
   const updatedList = list.map((res) => {
     if (!res) return res;
     const matchById = Boolean(targetUserId && res.authorId && res.authorId === targetUserId);
-    const matchByOldName = Boolean(oldNameNorm && res.authorName && res.authorName.trim().toLowerCase() === oldNameNorm);
+    const matchByOldName = Boolean(!res.authorId && oldNameNorm && res.authorName && res.authorName.trim().toLowerCase() === oldNameNorm);
     const isUserDimitriAccount = targetUserId === "user_dimitri" || (profile.email && profile.email.toLowerCase() === "dguerrask@gmail.com");
     const matchKnownDimitri = isUserDimitriAccount && (
       res.authorId === "user_dimitri" ||
@@ -566,7 +572,34 @@ modal.addEventListener("click", (e) => {
     closeModal();
   }
 });
+let lastFocusedBeforeModal = null;
+let lastFocusedBeforeDetails = null;
+let lastFocusedBeforeTour = null;
+
+function announceA11y(message) {
+  const el = document.getElementById("a11y-announcer");
+  if (!el || !message) return;
+  el.textContent = "";
+  setTimeout(() => {
+    el.textContent = message;
+  }, 20);
+}
+
+function makeKeyboardActivatable(el, label, handler) {
+  if (!el) return;
+  el.setAttribute("role", "button");
+  el.setAttribute("tabindex", "0");
+  if (label) el.setAttribute("aria-label", label);
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handler(e);
+    }
+  });
+}
+
 function openModal(prefill = {}) {
+  lastFocusedBeforeModal = document.activeElement;
   modalSpace = prefill.space || "Sala Maker";
   modalPeriod = prefill.period || "manha";
   modalSelectedSlotIndex = typeof prefill.slotIndex === "number" ? prefill.slotIndex : 0;
@@ -627,6 +660,9 @@ function openModal(prefill = {}) {
   renderMiniCalendar();
   renderModalSlots();
   modal.classList.add("active");
+  const closeBtn = document.getElementById("btn-close-modal");
+  if (closeBtn) closeBtn.focus();
+  announceA11y("Janela de novo agendamento aberta.");
 }
 function syncRecurrenceCheckboxesWithDay(dayKey) {
   document.querySelectorAll('input[name="recurrence-day"]').forEach((cb) => {
@@ -639,6 +675,10 @@ function closeModal() {
   const dateBtn = document.getElementById("modal-date-btn");
   if (miniCal) miniCal.style.display = "none";
   if (dateBtn) dateBtn.classList.remove("open");
+  if (lastFocusedBeforeModal && typeof lastFocusedBeforeModal.focus === "function") {
+    lastFocusedBeforeModal.focus();
+    lastFocusedBeforeModal = null;
+  }
 }
 document.querySelectorAll(".space-option").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -884,15 +924,28 @@ function renderModalSlots() {
       </div>
     `;
     if (!isUnavailable) {
-      slotCard.addEventListener("click", () => {
+      slotCard.setAttribute("role", "button");
+      slotCard.setAttribute("tabindex", "0");
+      slotCard.setAttribute("aria-pressed", isSelected ? "true" : "false");
+      slotCard.setAttribute("aria-label", `${slot.label}, ${slot.time}, ${isSelected ? "selecionada" : "disponível"}`);
+      const selectSlot = () => {
         modalSelectedSlotIndex = index;
         renderModalSlots();
+      };
+      slotCard.addEventListener("click", selectSlot);
+      slotCard.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          selectSlot();
+        }
       });
+    } else {
+      slotCard.setAttribute("aria-disabled", "true");
     }
     modalSlotsList.appendChild(slotCard);
   });
 }
-formAgendamento.addEventListener("submit", (e) => {
+formAgendamento.addEventListener("submit", async (e) => {
   e.preventDefault();
   const slots = SCHEDULES[modalPeriod] || [];
   const selectedSlot = slots[modalSelectedSlotIndex];
@@ -941,18 +994,48 @@ formAgendamento.addEventListener("submit", (e) => {
     isRecurrent: isRecurrent,
     createdAt: new Date().toISOString()
   };
-  reservations.push(newReservation);
-  saveReservations(reservations);
+
+  try {
+    const apiRes = await fetch("/api/reservations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reservation: newReservation })
+    });
+    const apiData = await apiRes.json().catch(() => ({}));
+    if (apiRes.status === 409) {
+      alert(apiData.error || "Este horário já foi reservado.");
+      syncReservationsFromServer(true);
+      return;
+    }
+    if (!apiRes.ok) {
+      alert(apiData.error || "Não foi possível salvar a reserva.");
+      return;
+    }
+    localReservationsLastUpdated = apiData.lastUpdated || Date.now();
+  } catch (err) {
+    // Fallback local caso servidor esteja offline
+  }
+
+  const allCurrent = getAllReservationsRaw();
+  allCurrent.push(newReservation);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(allCurrent));
+  if (syncChannel) {
+    try {
+      syncChannel.postMessage({
+        type: "RESERVATIONS_UPDATED",
+        schoolId: newReservation.schoolId,
+        timestamp: localReservationsLastUpdated
+      });
+    } catch (err) {}
+  }
+
   const dayLabel = DAY_FULL_LABELS[targetDay] || targetDay;
-  const notices = getNotices();
-  notices.unshift({
-    title: isRecurrent ? "Rotina semanal confirmada" : "Reserva confirmada",
-    desc: isRecurrent
+  pushNotice(
+    isRecurrent ? "Rotina semanal confirmada" : "Reserva confirmada",
+    isRecurrent
       ? `${modalSpace} · Toda ${dayLabel} (${selectedSlot.label}) por ${profile.name}`
-      : `${modalSpace} · ${selectedSlot.label} (${selectedSlot.time}) por ${profile.name}`,
-    time: "Agora"
-  });
-  saveNotices(notices);
+      : `${modalSpace} · ${selectedSlot.label} (${selectedSlot.time}) por ${profile.name}`
+  );
   closeModal();
   updateUI();
   alert(isRecurrent ? `Rotina semanal confirmada para todas as ${dayLabel}s!` : "Reserva confirmada com sucesso!");
@@ -1234,9 +1317,9 @@ function renderInicio() {
         </div>
       `;
       card.style.cursor = "pointer";
-      card.addEventListener("click", () => {
-        openReservationDetails(res.id);
-      });
+      const openCardDetails = () => openReservationDetails(res.id);
+      card.addEventListener("click", openCardDetails);
+      makeKeyboardActivatable(card, `Ver detalhes da reserva ${res.description || res.space} às ${res.slotTime}`, openCardDetails);
       cardsContainer.appendChild(card);
     });
   }
@@ -1549,13 +1632,15 @@ function renderAgendaMonthly() {
     `;
     if (!isWeekend) {
       cell.setAttribute("title", `Clique para ver horários de ${dayKey.toUpperCase()}`);
-      cell.addEventListener("click", () => {
+      const openDay = () => {
         agendaDailyDay = dayKey;
         document.querySelectorAll("#agenda-daily-tabs .daily-day-btn").forEach((b) => {
           b.classList.toggle("active", b.getAttribute("data-day") === dayKey);
         });
         switchAgendaViewMode("diaria");
-      });
+      };
+      cell.addEventListener("click", openDay);
+      makeKeyboardActivatable(cell, `Ver horários de ${d}`, openDay);
     }
     grid.appendChild(cell);
   }
@@ -1619,11 +1704,13 @@ function renderMyClasses() {
         </div>
       `;
       card.style.cursor = "pointer";
-      card.addEventListener("click", (e) => {
-        if (!e.target.closest(".card-cancel-btn")) {
+      const openMyCard = (e) => {
+        if (!e.target || !e.target.closest(".card-cancel-btn")) {
           openReservationDetails(res.id);
         }
-      });
+      };
+      card.addEventListener("click", openMyCard);
+      makeKeyboardActivatable(card, `Ver detalhes de ${res.description || res.space}`, () => openReservationDetails(res.id));
       card.querySelector(".card-cancel-btn").addEventListener("click", (e) => {
         e.stopPropagation();
         if (confirm("Deseja realmente cancelar esta reserva?")) {
@@ -1659,30 +1746,40 @@ function renderMyClasses() {
         </div>
       `;
       item.style.cursor = "pointer";
-      item.addEventListener("click", () => {
-        openReservationDetails(r.id);
-      });
+      const openRecurring = () => openReservationDetails(r.id);
+      item.addEventListener("click", openRecurring);
+      makeKeyboardActivatable(item, `Ver detalhes da rotina ${r.description}`, openRecurring);
       recurringContainer.appendChild(item);
     });
   }
 }
-function cancelReservation(id) {
-  let list = getReservations();
-  list = list.filter((r) => r.id !== id);
-  saveReservations(list);
-  const supa = getAppSupabase();
-  if (supa) {
+async function cancelReservation(id) {
+  const profile = getUserProfile();
+  const allCurrent = getAllReservationsRaw().filter((r) => r.id !== id);
+  localReservationsLastUpdated = Date.now();
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(allCurrent));
+  if (syncChannel) {
     try {
-      supa.from("agendamentos").delete().eq("id", id).catch(() => {});
+      syncChannel.postMessage({
+        type: "RESERVATIONS_UPDATED",
+        schoolId: getActiveSchool().id,
+        timestamp: localReservationsLastUpdated
+      });
     } catch (e) {}
   }
-  const notices = getNotices();
-  notices.unshift({
-    title: "Reserva cancelada",
-    desc: "Um dos seus horários foi liberado com sucesso.",
-    time: "Agora"
-  });
-  saveNotices(notices);
+
+  try {
+    const res = await fetch(
+      `/api/reservations/${encodeURIComponent(id)}?authorId=${encodeURIComponent(profile.userId || "")}`,
+      { method: "DELETE" }
+    );
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (data.lastUpdated) localReservationsLastUpdated = data.lastUpdated;
+    }
+  } catch (e) {}
+
+  pushNotice("Reserva cancelada", "Um dos seus horários foi liberado com sucesso.");
   updateUI();
 }
 function renderNoticesList() {
@@ -1723,6 +1820,9 @@ function renderNoticesList() {
 document.getElementById("btn-mark-notices-read").addEventListener("click", () => {
   saveNotices([]);
   renderNoticesList();
+  fetch(`/api/notices?schoolId=${encodeURIComponent(getActiveSchool().id)}`, {
+    method: "DELETE"
+  }).catch(() => {});
 });
 const cfgModoEscuro = document.getElementById("cfg-modo-escuro");
 const cfgAltoContraste = document.getElementById("cfg-alto-contraste");
@@ -1733,45 +1833,41 @@ const cfgDestacarFoco = document.getElementById("cfg-destacar-foco");
 const cfgReservaConf = document.getElementById("cfg-reserva-confirmada");
 const cfgReservaAlt = document.getElementById("cfg-reserva-alterada");
 const cfgReceberEmail = document.getElementById("cfg-receber-email");
+function applySettingsObject(cfg) {
+  if (!cfg) return;
+  if (cfgModoEscuro) cfgModoEscuro.checked = Boolean(cfg.modoEscuro);
+  document.body.classList.toggle("dark-theme", Boolean(cfg.modoEscuro));
+  if (cfgAltoContraste) cfgAltoContraste.checked = Boolean(cfg.altoContraste);
+  document.body.classList.toggle("high-contrast", Boolean(cfg.altoContraste));
+  if (cfgTextoMaior) cfgTextoMaior.checked = Boolean(cfg.textoMaior);
+  document.body.classList.toggle("large-text", Boolean(cfg.textoMaior));
+  if (cfgReduzirAnim) cfgReduzirAnim.checked = Boolean(cfg.reduzirAnim);
+  document.body.classList.toggle("no-animations", Boolean(cfg.reduzirAnim));
+  if (cfgLeituraFacil) cfgLeituraFacil.checked = Boolean(cfg.leituraFacil);
+  document.body.classList.toggle("readable-text", Boolean(cfg.leituraFacil));
+  if (cfgDestacarFoco) cfgDestacarFoco.checked = Boolean(cfg.destacarFoco);
+  document.body.classList.toggle("highlight-focus", Boolean(cfg.destacarFoco));
+  if (cfgReservaConf && typeof cfg.reservaConf === "boolean") cfgReservaConf.checked = cfg.reservaConf;
+  if (cfgReservaAlt && typeof cfg.reservaAlt === "boolean") cfgReservaAlt.checked = cfg.reservaAlt;
+  if (cfgReceberEmail && typeof cfg.receberEmail === "boolean") cfgReceberEmail.checked = cfg.receberEmail;
+}
 function loadSettings() {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return;
-    const cfg = JSON.parse(raw);
-    if (cfg.modoEscuro) {
-      cfgModoEscuro.checked = true;
-      document.body.classList.add("dark-theme");
-    }
-    if (cfg.altoContraste) {
-      cfgAltoContraste.checked = true;
-      document.body.classList.add("high-contrast");
-    }
-    if (cfg.textoMaior) {
-      cfgTextoMaior.checked = true;
-      document.body.classList.add("large-text");
-    }
-    if (cfg.reduzirAnim) {
-      cfgReduzirAnim.checked = true;
-      document.body.classList.add("no-animations");
-    }
-    if (cfg.leituraFacil) {
-      cfgLeituraFacil.checked = true;
-      document.body.classList.add("readable-text");
-    }
-    if (cfg.destacarFoco) {
-      cfgDestacarFoco.checked = true;
-      document.body.classList.add("highlight-focus");
-    }
-    if (typeof cfg.reservaConf === "boolean") {
-      cfgReservaConf.checked = cfg.reservaConf;
-    }
-    if (typeof cfg.reservaAlt === "boolean") {
-      cfgReservaAlt.checked = cfg.reservaAlt;
-    }
-    if (typeof cfg.receberEmail === "boolean") {
-      cfgReceberEmail.checked = cfg.receberEmail;
+    if (raw) {
+      applySettingsObject(JSON.parse(raw));
     }
   } catch (e) {}
+  const profile = getUserProfile();
+  fetch(`/api/settings?userId=${encodeURIComponent(profile.userId || "guest")}`, { cache: "no-store" })
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data) => {
+      if (data && data.settings) {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(data.settings));
+        applySettingsObject(data.settings);
+      }
+    })
+    .catch(() => {});
 }
 function saveCurrentSettings() {
   const cfg = {
@@ -1786,6 +1882,12 @@ function saveCurrentSettings() {
     receberEmail: cfgReceberEmail ? cfgReceberEmail.checked : false
   };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(cfg));
+  const profile = getUserProfile();
+  fetch("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...cfg, userId: profile.userId || "guest" })
+  }).catch(() => {});
 }
 if (cfgModoEscuro) {
   cfgModoEscuro.addEventListener("change", () => {
@@ -1904,10 +2006,19 @@ function openReservationDetails(id) {
       }
     };
   }
-  if (modalDetalhes) modalDetalhes.classList.add("active");
+  if (modalDetalhes) {
+    lastFocusedBeforeDetails = document.activeElement;
+    modalDetalhes.classList.add("active");
+    if (btnCloseDetalhes) btnCloseDetalhes.focus();
+    announceA11y("Detalhes da reserva abertos.");
+  }
 }
 function closeReservationDetails() {
   if (modalDetalhes) modalDetalhes.classList.remove("active");
+  if (lastFocusedBeforeDetails && typeof lastFocusedBeforeDetails.focus === "function") {
+    lastFocusedBeforeDetails.focus();
+    lastFocusedBeforeDetails = null;
+  }
 }
 if (btnCloseDetalhes) btnCloseDetalhes.addEventListener("click", closeReservationDetails);
 if (btnFecharDetalhes) btnFecharDetalhes.addEventListener("click", closeReservationDetails);
@@ -1949,17 +2060,23 @@ const btnPrevTour = document.getElementById("btn-prev-tour");
 const btnNextTour = document.getElementById("btn-next-tour");
 const btnSkipTour = document.getElementById("btn-skip-tour");
 function startTour(step = 0) {
+  lastFocusedBeforeTour = document.activeElement;
   if (activeView !== "inicio") {
     switchView("inicio");
   }
   currentTourStep = step;
   if (tourBackdrop) tourBackdrop.style.display = "block";
   renderTourStep(currentTourStep);
+  if (btnNextTour) btnNextTour.focus();
 }
 function closeTour() {
   if (tourBackdrop) tourBackdrop.style.display = "none";
   if (tourSpotlight) tourSpotlight.style.display = "none";
   localStorage.setItem(TOUR_STORAGE_KEY, "true");
+  if (lastFocusedBeforeTour && typeof lastFocusedBeforeTour.focus === "function") {
+    lastFocusedBeforeTour.focus();
+    lastFocusedBeforeTour = null;
+  }
 }
 function renderTourStep(index) {
   const step = TOUR_STEPS[index];
@@ -2064,61 +2181,22 @@ function updateUI() {
   else if (activeView === "agenda") renderAgenda();
   else if (activeView === "minhas-aulas") renderMyClasses();
 }
-const SUPABASE_APP_URL = "https://azxxweoulvsqvlyfmgtq.supabase.co";
-const SUPABASE_APP_KEY = "sb_publishable_n85S7m9uS_TThMm9zo63jA_fHAgpjLP";
-let appSupabaseClient = null;
-function getAppSupabase() {
-  if (!appSupabaseClient && window.supabase && SUPABASE_APP_URL && SUPABASE_APP_KEY) {
-    appSupabaseClient = window.supabase.createClient(SUPABASE_APP_URL, SUPABASE_APP_KEY);
-  }
-  return appSupabaseClient;
-}
 async function initAuthAndLogout() {
-  const client = getAppSupabase();
-  const currentProfile = getUserProfile();
-  const isExplicit = currentProfile && (currentProfile.userId === "user_dimitri" || currentProfile.userId === "user_anacarol");
-  if (client && !isExplicit) {
-    try {
-      const { data: { session } } = await client.auth.getSession();
-      if (session && session.user && session.user.email) {
-        const email = session.user.email;
-        const lower = email.toLowerCase();
-        let formattedName = "";
-        let role = "Docente CPS";
-        let userId = undefined;
-        const meta = session.user.user_metadata || {};
-        if (meta.name) formattedName = meta.name;
-        if (meta.role) role = meta.role;
-        if (!formattedName && currentProfile && currentProfile.name && currentProfile.email === email) {
-          formattedName = currentProfile.name;
-          role = currentProfile.role || role;
+  try {
+    const res = await fetch("/api/auth/me", { cache: "no-store" });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.authenticated && data.user) {
+        const current = getUserProfile();
+        if (!current || current.userId === data.user.userId) {
+          sessionStorage.setItem(USER_PROFILE_KEY, JSON.stringify(data.user));
+          localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(data.user));
+          applyUserProfile(data.user);
         }
-        if (lower === "dguerrask@gmail.com") {
-          formattedName = formattedName || "Dimitri";
-          userId = "user_dimitri";
-        } else if (lower.includes("anacarol") || lower.includes("ana.carol")) {
-          formattedName = formattedName || "Ana Carol";
-          userId = "user_anacarol";
-        } else {
-          if (!formattedName) {
-            const namePart = email.split("@")[0].replace(/\./g, " ");
-            formattedName = namePart.charAt(0).toUpperCase() + namePart.slice(1);
-          }
-          if (!role) {
-            role = lower.includes("aluno") ? "Aluno CPS" : "Docente CPS";
-          }
-        }
-        saveUserProfile({
-          name: formattedName,
-          role: role,
-          email: email,
-          userId: userId
-        });
       }
-    } catch (e) {
-      console.warn("Erro ao buscar sessão no app:", e);
     }
-  }
+  } catch (e) {}
+
   document.querySelectorAll(".logout-link").forEach((logoutLink) => {
     logoutLink.addEventListener("click", (e) => {
       e.preventDefault();
@@ -2127,47 +2205,42 @@ async function initAuthAndLogout() {
   });
   const mobileAvatarEl = document.getElementById("mobile-user-avatar");
   if (mobileAvatarEl) {
-    mobileAvatarEl.addEventListener("click", () => {
-      switchView("configuracoes");
+    const goSettings = () => switchView("configuracoes");
+    mobileAvatarEl.addEventListener("click", goSettings);
+    mobileAvatarEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        goSettings();
+      }
     });
   }
 }
-async function syncReservationsFromServer(force = false) {
-  const supa = getAppSupabase();
-  if (supa) {
-    try {
-      const { data: supaRows } = await supa.from("agendamentos").select("*");
-      if (Array.isArray(supaRows) && supaRows.length > 0) {
-        const supaList = supaRows.map((row) => ({
-          id: row.id,
-          schoolId: row.school_id || "furlan",
-          space: row.space,
-          day: row.day,
-          date: row.date,
-          period: row.period,
-          slotIndex: Number(row.slot_index),
-          slotLabel: row.slot_label,
-          slotTime: row.slot_time,
-          description: row.description || "",
-          grade: row.grade || "Turma ETEC",
-          authorName: row.author_name,
-          authorRole: row.author_role || "Docente CPS",
-          authorId: row.author_id,
-          isRecurrent: Boolean(row.is_recurrent),
-          createdAt: row.created_at
-        }));
-        const currentLocal = getAllReservationsRaw();
-        const map = new Map();
-        supaList.forEach((r) => map.set(r.id, r));
-        currentLocal.forEach((r) => {
-          if (!map.has(r.id)) map.set(r.id, r);
-        });
-        const mergedList = Array.from(map.values());
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedList));
-        updateUI();
-      }
-    } catch (e) {}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  const miniCal = document.getElementById("modal-mini-calendar");
+  const dateBtn = document.getElementById("modal-date-btn");
+  if (miniCal && miniCal.style.display !== "none") {
+    miniCal.style.display = "none";
+    if (dateBtn) {
+      dateBtn.classList.remove("open");
+      dateBtn.focus();
+    }
+    return;
   }
+  if (modalDetalhes && modalDetalhes.classList.contains("active")) {
+    closeReservationDetails();
+    return;
+  }
+  if (modal && modal.classList.contains("active")) {
+    closeModal();
+    return;
+  }
+  if (tourBackdrop && tourBackdrop.style.display !== "none") {
+    closeTour();
+  }
+});
+async function syncReservationsFromServer(force = false) {
   try {
     const res = await fetch("/api/reservations", { cache: "no-store" });
     if (!res.ok) return;
@@ -2178,37 +2251,17 @@ async function syncReservationsFromServer(force = false) {
       const currentLocalAll = getAllReservationsRaw();
       if (force || serverTime > localReservationsLastUpdated || (currentLocalAll.length === 0 && serverList.length > 0)) {
         localReservationsLastUpdated = serverTime;
-        const map = new Map();
-        serverList.forEach((r) => map.set(r.id, r));
-        currentLocalAll.forEach((r) => {
-          if (!map.has(r.id)) {
-            map.set(r.id, r);
-          }
-        });
-        const mergedList = Array.from(map.values());
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedList));
-        const profile = getUserProfile();
-        updateReservationsAuthor(profile);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(serverList));
         updateUI();
         if (modal && modal.classList.contains("active")) {
           renderModalSlots();
         }
-        if (mergedList.length > serverList.length) {
-          fetch("/api/reservations", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ reservations: mergedList })
-          }).catch(() => {});
-        }
-      } else if (currentLocalAll.length > 0 && serverList.length === 0) {
-        fetch("/api/reservations", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reservations: currentLocalAll })
-        }).catch(() => {});
       }
     }
   } catch (e) {}
+  if (force) {
+    syncNoticesFromServer();
+  }
 }
 if (syncChannel) {
   syncChannel.onmessage = (event) => {
@@ -2236,7 +2289,6 @@ loadSettings();
 applyUserProfile();
 initAuthAndLogout();
 updateSchoolUI();
-updateReservationsAuthor(getUserProfile(), "Dimitri");
 updateUI();
 switchView("inicio");
 let lastCheckedDate = new Date().toDateString();

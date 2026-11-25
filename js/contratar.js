@@ -90,8 +90,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const existing = JSON.parse(localStorage.getItem('saas_leads_contratacao') || '[]');
         existing.push(lead);
         localStorage.setItem('saas_leads_contratacao', JSON.stringify(existing));
+        fetch('/api/leads', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(lead),
+          keepalive: true
+        }).catch(() => {});
       } catch (err) {
-        console.warn('Falha ao registrar lead localmente:', err);
+        console.warn('Falha ao registrar lead:', err);
       }
       setTimeout(() => {
         window.location.href = whatsappUrl;

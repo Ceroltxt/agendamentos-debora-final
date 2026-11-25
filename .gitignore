@@ -3,3 +3,7 @@ node_modules/
 Thumbs.db
 *.log
 .env
+data/aplika.db
+data/aplika.db-*
+data/db.json
+data/.auth_secret

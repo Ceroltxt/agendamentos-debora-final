@@ -8,7 +8,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/escolas.css">
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
   <header class="escolas-top-nav">
@@ -118,9 +117,9 @@
       Sistema Institucional de Agendamento
     </div>
   </footer>
-  <div class="invite-modal-overlay" id="invite-modal">
+  <div class="invite-modal-overlay" id="invite-modal" role="dialog" aria-modal="true" aria-labelledby="invite-modal-title">
     <div class="invite-modal-card">
-      <h3 class="invite-modal-title">Entrar com convite da escola</h3>
+      <h3 class="invite-modal-title" id="invite-modal-title">Entrar com convite da escola</h3>
       <p class="invite-modal-desc">
         Cole abaixo o link recebido ou o código de acesso fornecido pela sua coordenação pedagógica:
       </p>

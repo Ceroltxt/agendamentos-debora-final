@@ -1,15 +1,7 @@
-const SUPABASE_URL = "https://azxxweoulvsqvlyfmgtq.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_n85S7m9uS_TThMm9zo63jA_fHAgpjLP";
-let supabaseClient = null;
-function getSupabase() {
-  if (!supabaseClient && window.supabase && SUPABASE_URL && SUPABASE_ANON_KEY) {
-    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  }
-  return supabaseClient;
-}
 const SCHOOL_STORAGE_KEY = "etec_escola_ativa";
 const USER_SCHOOLS_KEY = "etec_usuario_escolas";
 const USER_PROFILE_KEY = "etec_usuario_perfil";
+
 const DEFAULT_SCHOOL_CATALOG = [
   {
     id: "furlan",
@@ -20,6 +12,7 @@ const DEFAULT_SCHOOL_CATALOG = [
     description: "Sistema de agendamento de espaços"
   }
 ];
+
 function getSchoolBuildingSVG() {
   return `
     <svg viewBox="0 0 80 70" fill="none" xmlns="http://www.w3.org/2000/svg" class="school-building-svg">
@@ -40,6 +33,7 @@ function getSchoolBuildingSVG() {
     </svg>
   `;
 }
+
 function getUser() {
   try {
     const raw = sessionStorage.getItem(USER_PROFILE_KEY) || localStorage.getItem(USER_PROFILE_KEY);
@@ -47,37 +41,23 @@ function getUser() {
   } catch (e) {}
   return { name: "Docente", role: "Docente CPS", email: "" };
 }
-function getUserSchools() {
+
+function getUserSchoolsLocal() {
   const user = getUser();
-  const isQuickAccess = user && (
-    user.userId === "user_dimitri" ||
-    user.userId === "user_anacarol" ||
-    user.email === "dguerrask@gmail.com" ||
-    user.email === "anacarol.docente@gmail.com" ||
-    user.isQuickAccess === true
-  );
   const userKey = user && user.userId ? `etec_escolas_${user.userId}` : USER_SCHOOLS_KEY;
   try {
     const raw = localStorage.getItem(userKey);
     if (raw) {
-      let list = JSON.parse(raw);
-      if (Array.isArray(list)) {
-        list = list.filter((s) => s.id === "furlan");
-        localStorage.setItem(userKey, JSON.stringify(list));
-        if (list.length > 0) return list;
-      }
+      const list = JSON.parse(raw);
+      if (Array.isArray(list)) return list;
     }
   } catch (e) {}
-  if (isQuickAccess) {
-    const defaultList = [DEFAULT_SCHOOL_CATALOG[0]];
-    try {
-      localStorage.setItem(userKey, JSON.stringify(defaultList));
-      localStorage.setItem(USER_SCHOOLS_KEY, JSON.stringify(defaultList));
-    } catch (e) {}
-    return defaultList;
+  if (user && (user.userId === "user_dimitri" || user.userId === "user_anacarol")) {
+    return [DEFAULT_SCHOOL_CATALOG[0]];
   }
   return [];
 }
+
 function saveUserSchools(list) {
   const user = getUser();
   const userKey = user && user.userId ? `etec_escolas_${user.userId}` : USER_SCHOOLS_KEY;
@@ -86,6 +66,7 @@ function saveUserSchools(list) {
     localStorage.setItem(USER_SCHOOLS_KEY, JSON.stringify(list));
   } catch (e) {}
 }
+
 function selectSchoolAndEnter(school) {
   if (!school || !school.id) return;
   try {
@@ -94,17 +75,18 @@ function selectSchoolAndEnter(school) {
   } catch (e) {}
   window.location.href = "app.html";
 }
-function renderUserSchools() {
+
+function renderUserSchools(schoolsList) {
   const container = document.getElementById("user-schools-container");
   if (!container) return;
-  const schools = getUserSchools();
+  const schools = Array.isArray(schoolsList) ? schoolsList : getUserSchoolsLocal();
   container.innerHTML = "";
   if (schools.length === 0) {
     container.innerHTML = `
       <div class="no-schools-box">
         <p><strong>Nenhuma escola vinculada no momento.</strong></p>
         <p style="font-size: 12px; color: #433f4e; margin-top: 5px;">
-          Digite o código de acesso fornecido pela sua instituição no campo abaixo para liberar o sistema.
+          Digite o código de acesso fornecido pela secretaria da sua escola no campo abaixo para liberar o sistema.
         </p>
       </div>
     `;
@@ -137,87 +119,105 @@ function renderUserSchools() {
     container.appendChild(row);
   });
 }
+
+async function loadSchoolsFromServer() {
+  const user = getUser();
+  const query = user && user.userId ? `?userId=${encodeURIComponent(user.userId)}` : "";
+  try {
+    const res = await fetch(`/api/schools${query}`, { cache: "no-store" });
+    if (res.ok) {
+      const data = await res.json();
+      const list = Array.isArray(data.userSchools) ? data.userSchools : [];
+      saveUserSchools(list);
+      renderUserSchools(list);
+      return;
+    }
+  } catch (e) {}
+  renderUserSchools(getUserSchoolsLocal());
+}
+
 async function findAndJoinSchoolByCode(rawCode) {
   if (!rawCode || !rawCode.trim()) {
     alert("Digite o código da escola.");
     return;
   }
-  const cleanCode = rawCode.trim().toUpperCase();
-  let found = null;
-  const client = getSupabase();
-  if (client) {
-    try {
-      const { data } = await client.from("escolas").select("*");
-      if (Array.isArray(data) && data.length > 0) {
-        const match = data.find((s) => s.code && s.code.toUpperCase() === cleanCode);
-        if (match) {
-          found = {
-            id: match.id,
-            name: match.name,
-            code: match.code,
-            city: match.city || "Barueri - SP",
-            description: match.description || "Sistema de agendamento de espaços"
-          };
-        }
-      }
-    } catch (e) {}
-  }
-  if (!found) {
-    const furlan = DEFAULT_SCHOOL_CATALOG[0];
-    const isMatch = furlan.code.toUpperCase() === cleanCode || 
-                    (furlan.aliases && furlan.aliases.some((a) => a.toUpperCase() === cleanCode));
-    if (isMatch) found = furlan;
-  }
-  if (!found) {
-    alert("Código de escola inválido.");
-    return;
-  }
-  saveUserSchools([found]);
-  renderUserSchools();
-  selectSchoolAndEnter(found);
-}
-(function purgeLegacySchools() {
+  const user = getUser();
   try {
-    const raw = localStorage.getItem(USER_SCHOOLS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        const filtered = parsed.filter((s) => s.id === "furlan");
-        localStorage.setItem(USER_SCHOOLS_KEY, JSON.stringify(filtered));
-      }
+    const res = await fetch("/api/schools/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        code: rawCode.trim(),
+        userId: user && user.userId ? user.userId : null
+      })
+    });
+    const text = await res.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (e) {
+      data = { error: "Resposta inválida do servidor. Reinicie o backend com npm start." };
     }
-    const active = localStorage.getItem(SCHOOL_STORAGE_KEY);
-    if (active) {
-      const parsed = JSON.parse(active);
-      if (parsed && parsed.id !== "furlan") {
-        localStorage.removeItem(SCHOOL_STORAGE_KEY);
-        sessionStorage.removeItem(SCHOOL_STORAGE_KEY);
-      }
+    if (!res.ok) {
+      alert(data.error || "Código de escola inválido.");
+      return;
     }
-  } catch (e) {}
-})();
+    const updatedList = Array.isArray(data.userSchools) && data.userSchools.length > 0
+      ? data.userSchools
+      : [data.school];
+    saveUserSchools(updatedList);
+    renderUserSchools(updatedList);
+    selectSchoolAndEnter(data.school);
+  } catch (err) {
+    alert("Erro de conexão ao validar código da escola.");
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const user = getUser();
   const userNameEl = document.getElementById("top-user-name");
   if (userNameEl && user.name) {
     userNameEl.textContent = user.name;
   }
-  renderUserSchools();
+  renderUserSchools(getUserSchoolsLocal());
+  loadSchoolsFromServer();
+
+  const logoutBtn = document.querySelector(".logout-action");
+  if (logoutBtn) {
+    logoutBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      try {
+        sessionStorage.removeItem(USER_PROFILE_KEY);
+        sessionStorage.removeItem(SCHOOL_STORAGE_KEY);
+        localStorage.removeItem(USER_PROFILE_KEY);
+        localStorage.removeItem(SCHOOL_STORAGE_KEY);
+        localStorage.removeItem("aplika_auth_token");
+        await fetch("/api/auth/logout", { method: "POST" });
+      } catch (err) {}
+      window.location.href = "login.html";
+    });
+  }
+
   const searchForm = document.getElementById("search-school-form");
   const codeInput = document.getElementById("school-code-input");
   if (searchForm && codeInput) {
     searchForm.addEventListener("submit", (e) => {
       e.preventDefault();
-      const code = codeInput.value;
-      findAndJoinSchoolByCode(code);
+      findAndJoinSchoolByCode(codeInput.value);
     });
   }
+
   const inviteBtn = document.getElementById("btn-invite-access");
   const inviteModal = document.getElementById("invite-modal");
   const cancelInviteBtn = document.getElementById("btn-cancel-invite");
   const confirmInviteBtn = document.getElementById("btn-confirm-invite");
   const inviteCodeInput = document.getElementById("invite-code-input");
+
   if (inviteBtn && inviteModal) {
+    const closeInviteModal = () => {
+      inviteModal.classList.remove("active");
+      inviteBtn.focus();
+    };
     inviteBtn.addEventListener("click", () => {
       inviteModal.classList.add("active");
       if (inviteCodeInput) {
@@ -226,9 +226,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
     if (cancelInviteBtn) {
-      cancelInviteBtn.addEventListener("click", () => {
-        inviteModal.classList.remove("active");
-      });
+      cancelInviteBtn.addEventListener("click", closeInviteModal);
     }
     if (confirmInviteBtn && inviteCodeInput) {
       confirmInviteBtn.addEventListener("click", () => {
@@ -247,7 +245,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     inviteModal.addEventListener("click", (e) => {
       if (e.target === inviteModal) {
-        inviteModal.classList.remove("active");
+        closeInviteModal();
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && inviteModal.classList.contains("active")) {
+        closeInviteModal();
       }
     });
   }
